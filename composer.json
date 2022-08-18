@@ -1,0 +1,23 @@
+{
+	"name": "dablach/zip-stream-reader",
+	"description": "Stream reader for extracting zip archives on the fly.",
+	"version": "0.1.0",
+	"keywords": [
+		"zip"
+	],
+	"license": "GPL-3.0-or-later",
+	"authors": [
+		{
+			"name": "David Blatter",
+			"email": "mail@dabla.ch"
+		}
+	],
+	"require": {
+		"php": ">=8.0"
+	},
+	"autoload": {
+		"psr-4": {
+			"Dabla\\ZipStreamReader\\": "src"
+		}
+	}
+}
