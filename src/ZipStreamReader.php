@@ -15,6 +15,8 @@ class ZipStreamReader implements \Iterator
 
 	private bool $done = false;
 
+	private ?array $centralDirectory = null;
+
 	/** @param resource $fd */
 	public function __construct($fd) {
 		$this->fd = $fd;
@@ -66,6 +68,7 @@ class ZipStreamReader implements \Iterator
 	}
 
 	private function readEntry(): void {
+		$offset = ftell($this->fd);
 		$header = unpack(
 			'Vsig/vversion/vbits/vcomp/vmdate/vmtime/Vcrc32/VcSize/VuSize/vnamelen/vxtralen',
 			fread($this->fd, 30) ?: throw new \Exception('Unexpected end of content'),
@@ -78,24 +81,27 @@ class ZipStreamReader implements \Iterator
 			throw new \Exception('Malformed zip');
 		}
 
+		$header['name'] = fread($this->fd, $header['namelen']) ?: throw new \Exception('Unexpected end of content');
+		if ($header['xtralen'] > 0) {
+			$header['extra'] = fread($this->fd, $header['xtralen']) ?: throw new \Exception('Unexpected end of content');
+		}
+
 		if(($header['bits'] & 1) !== 0) {
 			throw new \Exception('Encryption is not supported');
 		}
 		if(($header['bits'] & 8) !== 0) {
-			throw new \Exception('This archive can not be read from stream, because at least one entry has no pre-known size.');
+			$this->centralDirectory ??= $this->readCentralDirectory();
+			$header = $this->centralDirectory[$offset] ?? throw new \Exception('entry has no preknown size and centry directory record could not be found.');
 		}
-
-		$name = fread($this->fd, $header['namelen']) ?: throw new \Exception('Unexpected end of content');
 
 		$cSize = $header['cSize'];
 		$uSize = $header['uSize'];
 
 		if($header['xtralen'] > 0) {
-			$extra = fread($this->fd, $header['xtralen']) ?: throw new \Exception('Unexpected end of content');
 			for($i = 0; $i < $header['xtralen'];) {
-				$x = unpack('vid/vlen', $extra, $i) ?: throw new \Exception('Could not parse local file header.');
+				$x = unpack('vid/vlen', $header['extra'], $i) ?: throw new \Exception('Could not parse local file header.');
 				if($x['id'] === 1) {
-					$size = unpack('PuSize/PcSize', $extra, $i+4) ?: throw new \Exception('Could not parse local file header.');
+					$size = unpack('PuSize/PcSize', $header['extra'], $i+4) ?: throw new \Exception('Could not parse local file header.');
 					$cSize = $size['cSize'];
 					$uSize = $size['uSize'];
 				}
@@ -123,8 +129,63 @@ class ZipStreamReader implements \Iterator
 			$stream,
 			$this->decodeMsdosDatetime($header['mdate'], $header['mtime']) ?: throw new \Exception('Invalid mtime'),
 			$uSize,
-			$name
+			$header['name']
 		);
+	}
+
+	private function readCentralDirectory(): array {
+		$offsetShift = ftell($this->fd);
+		if (!stream_get_meta_data($this->fd)['seekable']) {
+			$mem = fopen('php://temp', 'r+') ?: throw new \Exception('could not open tempfile');
+			stream_copy_to_stream($this->fd, $mem);
+			rewind($mem);
+			fclose($this->fd);
+			$this->fd = $mem;
+		}
+		$origPos = ftell($this->fd);
+
+		$rpos = -1024;
+		$cdOffset = $cdLen = $totalLen = null;
+		do {
+			fseek($this->fd, $rpos, SEEK_END);
+			$totalLen ??= ftell($this->fd) - $rpos;
+			$chunk = fread($this->fd, 1024);
+			$p = strrpos($chunk, "\x50\x4b\x05\x06");
+			if ($p !== false) {
+				$data = unpack('Vlen/Voffset', substr($chunk, $p + 12, 8))
+					?: throw new \Exception('could not read end of central directory record');
+				$cdOffset = $data['offset'] - $offsetShift;
+				$cdLen = $data['len'];
+			}
+			$rpos -= 1008; // go back less than chunk size bytes, so the EOCD record lies completely inside the chunk
+		} while ($cdOffset === null && $totalLen + $rpos > $origPos);
+
+		if ($cdOffset === null || $cdLen === null) throw new \Exception('could not locate central directory');
+		fseek($this->fd, $cdOffset, SEEK_SET);
+		$cdBytes = fread($this->fd, $cdLen) ?: throw new \Exception('unexpected end of data');
+		$offset = 0;
+		$directory = [];
+		while ($offset < $cdLen) {
+			$header = unpack(
+				'Vsig/vversion/vexver/vbits/vcomp/vmdate/vmtime/Vcrc32/VcSize/VuSize/vnamelen/vxtralen/vcommlen/vndisk/vintattr/Vextattr/Voffset',
+				$cdBytes,
+				$offset
+			) ?: throw new \Exception('Cloud not parse central directory entry.');
+			if ($header['sig'] !== 0x02014b50) {
+				throw new \Exception('Malformed zip');
+			}
+			$offset += 46;
+			$header['name'] = substr($cdBytes, $offset, $header['namelen']);
+			$offset += $header['namelen'];
+			$header['extra'] = substr($cdBytes, $offset, $header['xtralen']);
+			$offset += $header['xtralen'];
+			$header['comment'] = substr($cdBytes, $offset, $header['commlen']);
+			$offset += $header['commlen'];
+			$directory[$header['offset']] = $header;
+		}
+
+		fseek($this->fd, $origPos, SEEK_SET);
+		return $directory;
 	}
 
 	private function decodeMsdosDatetime(int $date, int $time): int|false {
@@ -138,4 +199,3 @@ class ZipStreamReader implements \Iterator
 		);
 	}
 }
-
