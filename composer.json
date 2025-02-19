@@ -1,7 +1,7 @@
 {
 	"name": "dablach/zip-stream-reader",
 	"description": "Stream reader for extracting zip archives on the fly.",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"keywords": [
 		"zip"
 	],
