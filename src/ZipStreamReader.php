@@ -69,29 +69,47 @@ class ZipStreamReader implements \Iterator
 
 	private function readEntry(): void {
 		$offset = ftell($this->fd);
-		$header = unpack(
-			'Vsig/vversion/vbits/vcomp/vmdate/vmtime/Vcrc32/VcSize/VuSize/vnamelen/vxtralen',
-			fread($this->fd, 30) ?: throw new \Exception('Unexpected end of content'),
-		) ?: throw new \Exception('Cloud not parse local file header.');
 
-		if($header['sig'] === 0x08064b50 || $header['sig'] === 0x02014b50) {
-			$this->done = true;
-			return;
-		} else if($header['sig'] !== 0x04034b50) {
-			throw new \Exception('Malformed zip');
+		if ($this->centralDirectory !== null) {
+			$nextOffset = null;
+			foreach ($this->centralDirectory as $entryOffset => $cdEntry) {
+				if ($entryOffset >= $offset && ($nextOffset === null || $nextOffset > $entryOffset)) {
+					$nextOffset = $entryOffset;
+					$header = $cdEntry;
+				}
+			}
+			if ($nextOffset !== null) {
+				$offset = $nextOffset;
+				fseek($this->fd, $offset + 30, SEEK_SET);
+			}
 		}
 
-		$header['name'] = fread($this->fd, $header['namelen']) ?: throw new \Exception('Unexpected end of content');
-		if ($header['xtralen'] > 0) {
-			$header['extra'] = fread($this->fd, $header['xtralen']) ?: throw new \Exception('Unexpected end of content');
+		if (!isset($header)) {
+			$header = unpack(
+				'Vsig/vversion/vbits/vcomp/vmdate/vmtime/Vcrc32/VcSize/VuSize/vnamelen/vxtralen',
+				fread($this->fd, 30) ?: throw new \Exception('Unexpected end of content'),
+			) ?: throw new \Exception('Cloud not parse local file header.');
+
+			if($header['sig'] === 0x08064b50 || $header['sig'] === 0x02014b50) {
+				$this->done = true;
+				return;
+			} else if($header['sig'] !== 0x04034b50) {
+				throw new \Exception('Malformed zip');
+			}
+
+			$header['name'] = fread($this->fd, $header['namelen']) ?: throw new \Exception('Unexpected end of content');
+			if ($header['xtralen'] > 0) {
+				$header['extra'] = fread($this->fd, $header['xtralen']) ?: throw new \Exception('Unexpected end of content');
+			}
+
+			if(($header['bits'] & 8) !== 0) {
+				$this->centralDirectory ??= $this->readCentralDirectory();
+				$header = $this->centralDirectory[$offset] ?? throw new \Exception('entry has no preknown size and centry directory record could not be found.');
+			}
 		}
 
 		if(($header['bits'] & 1) !== 0) {
 			throw new \Exception('Encryption is not supported');
-		}
-		if(($header['bits'] & 8) !== 0) {
-			$this->centralDirectory ??= $this->readCentralDirectory();
-			$header = $this->centralDirectory[$offset] ?? throw new \Exception('entry has no preknown size and centry directory record could not be found.');
 		}
 
 		$cSize = $header['cSize'];
