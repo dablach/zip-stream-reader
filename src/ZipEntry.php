@@ -29,10 +29,6 @@ class ZipEntry
 		return feof($this->stream);
 	}
 
-	public function close(): void {
-		fclose($this->stream);
-	}
-
 	public function getName(): string {
 		return $this->name;
 	}
