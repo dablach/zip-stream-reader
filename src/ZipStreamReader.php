@@ -96,20 +96,24 @@ class ZipStreamReader implements \Iterator
 
 		$cSize = $header['cSize'];
 		$uSize = $header['uSize'];
+		$hasDataDescriptor = ($header['bits'] & 8) === 0 ? 0 : 1;
 
 		if($header['xtralen'] > 0) {
 			for($i = 0; $i < $header['xtralen'];) {
 				$x = unpack('vid/vlen', $header['extra'], $i) ?: throw new \Exception('Could not parse local file header.');
-				if($x['id'] === 1) {
+				if($x['id'] === 1 && $cSize === 0xffffffff && $uSize === 0xffffffff) {
 					$size = unpack('PuSize/PcSize', $header['extra'], $i+4) ?: throw new \Exception('Could not parse local file header.');
 					$cSize = $size['cSize'];
 					$uSize = $size['uSize'];
+					if ($hasDataDescriptor === 1) {
+						$hasDataDescriptor = 2;
+					}
 				}
 				$i += $x['len']+4;
 			}
 		}
 
-		[$stream, $this->wrapper] = ZipEntryStreamWrapper::createStream($this->fd, $cSize);
+		[$stream, $this->wrapper] = ZipEntryStreamWrapper::createStream($this->fd, $cSize, $hasDataDescriptor);
 
 		switch($header['comp']) {
 			case 0:
